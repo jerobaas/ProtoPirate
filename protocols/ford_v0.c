@@ -15,18 +15,18 @@ static const SubGhzBlockConst subghz_protocol_ford_v0_const = {
 
 // Ford V0 CRC Matrix (8x8 bytes) - extracted from firmware
 static const uint8_t ford_v0_crc_matrix[64] = {
-    0xDA, 0xB5, 0x55, 0x6A, 0xAA, 0xAA, 0xAA, 0xD5, // Row 0
-    0xB6, 0x6C, 0xCC, 0xD9, 0x99, 0x99, 0x99, 0xB3, // Row 1
-    0x71, 0xE3, 0xC3, 0xC7, 0x87, 0x87, 0x87, 0x8F, // Row 2
-    0x0F, 0xE0, 0x3F, 0xC0, 0x7F, 0x80, 0x7F, 0x80, // Row 3
-    0x00, 0x1F, 0xFF, 0xC0, 0x00, 0x7F, 0xFF, 0x80, // Row 4
-    0x00, 0x00, 0x00, 0x3F, 0xFF, 0xFF, 0xFF, 0x80, // Row 5
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, // Row 6
-    0x23, 0x12, 0x94, 0x84, 0x35, 0xF4, 0x55, 0x84, // Row 7
+    0xDA, 0xB5, 0x55, 0x6A, 0xAA, 0xAA, 0xAA, 0xD5,  // Row 0
+    0xB6, 0x6C, 0xCC, 0xD9, 0x99, 0x99, 0x99, 0xB3,  // Row 1
+    0x71, 0xE3, 0xC3, 0xC7, 0x87, 0x87, 0x87, 0x8F,  // Row 2
+    0x0F, 0xE0, 0x3F, 0xC0, 0x7F, 0x80, 0x7F, 0x80,  // Row 3
+    0x00, 0x1F, 0xFF, 0xC0, 0x00, 0x7F, 0xFF, 0x80,  // Row 4
+    0x00, 0x00, 0x00, 0x3F, 0xFF, 0xFF, 0xFF, 0x80,  // Row 5
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F,  // Row 6
+    0x23, 0x12, 0x94, 0x84, 0x35, 0xF4, 0x55, 0x84,  // Row 7
 };
 
 // ============================================================================
-// CRC FUNCTIONS (for decoder verification)
+// CRC FUNCTIONS
 // ============================================================================
 
 static uint8_t ford_v0_popcount8(uint8_t x) {
@@ -42,18 +42,6 @@ static uint8_t ford_v0_popcount8(uint8_t x) {
 static uint8_t ford_v0_calculate_crc(uint8_t* buf) {
     uint8_t crc = 0;
 
-    FURI_LOG_D(
-        TAG,
-        "CRC calc input: buf[1-8] = %02X %02X %02X %02X %02X %02X %02X %02X",
-        buf[1],
-        buf[2],
-        buf[3],
-        buf[4],
-        buf[5],
-        buf[6],
-        buf[7],
-        buf[8]);
-
     for(int row = 0; row < 8; row++) {
         uint8_t xor_sum = 0;
         for(int col = 0; col < 8; col++) {
@@ -63,23 +51,29 @@ static uint8_t ford_v0_calculate_crc(uint8_t* buf) {
         if(parity) {
             crc |= (1 << row);
         }
-        FURI_LOG_D(
-            TAG,
-            "CRC row %d: xor_sum=0x%02X popcount=%d parity=%d crc_so_far=0x%02X",
-            row,
-            xor_sum,
-            ford_v0_popcount8(xor_sum),
-            parity,
-            crc);
     }
 
-    // XOR with 0x80 - Ford appears to invert bit 7
-    crc ^= 0x80;
-
-    FURI_LOG_D(TAG, "CRC calculated: 0x%02X", crc);
     return crc;
 }
 
+// Calculate CRC for encoding: returns the value to transmit
+static uint8_t ford_v0_calculate_crc_for_tx(uint64_t key1, uint8_t bs) {
+    uint8_t buf[16] = {0};
+
+    // Extract bytes from key1 into buf[0..7]
+    for(int i = 0; i < 8; ++i) {
+        buf[i] = (uint8_t)(key1 >> (56 - i * 8));
+    }
+
+    // BS goes into buf[8]
+    buf[8] = bs;
+
+    // Calculate CRC and XOR with 0x80 for transmission
+    uint8_t crc = ford_v0_calculate_crc(buf);
+    return crc ^ 0x80;
+}
+
+// Verify received CRC
 static bool ford_v0_verify_crc(uint64_t key1, uint16_t key2) {
     uint8_t buf[16] = {0};
 
@@ -91,34 +85,9 @@ static bool ford_v0_verify_crc(uint64_t key1, uint16_t key2) {
     // BS is high byte of key2, goes into buf[8]
     buf[8] = (uint8_t)(key2 >> 8);
 
-    FURI_LOG_I(
-        TAG,
-        "CRC verify: key1=0x%08lX%08lX key2=0x%04X",
-        (uint32_t)(key1 >> 32),
-        (uint32_t)(key1 & 0xFFFFFFFF),
-        key2);
-    FURI_LOG_I(
-        TAG,
-        "CRC verify: buf[0-8] = %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-        buf[0],
-        buf[1],
-        buf[2],
-        buf[3],
-        buf[4],
-        buf[5],
-        buf[6],
-        buf[7],
-        buf[8]);
-
     uint8_t calculated_crc = ford_v0_calculate_crc(buf);
-    uint8_t received_crc = (uint8_t)(key2 & 0xFF);
-
-    FURI_LOG_I(
-        TAG,
-        "CRC compare: calculated=0x%02X received=0x%02X match=%s",
-        calculated_crc,
-        received_crc,
-        (calculated_crc == received_crc) ? "YES" : "NO");
+    // Received CRC has bit 7 inverted
+    uint8_t received_crc = (uint8_t)(key2 & 0xFF) ^ 0x80;
 
     return (calculated_crc == received_crc);
 }
@@ -437,19 +406,23 @@ SubGhzProtocolStatus
         }
         instance->generic.cnt = instance->count;
 
+        // Read BS from file
         uint32_t bs_temp = 0;
         flipper_format_read_uint32(flipper_format, "BS", &bs_temp, 1);
+        uint8_t bs = (uint8_t)(bs_temp & 0xFF);
 
-        uint32_t crc_temp = 0;
-        flipper_format_read_uint32(flipper_format, "CRC", &crc_temp, 1);
+        // Calculate CRC from key1 and BS
+        uint8_t calculated_crc = ford_v0_calculate_crc_for_tx(instance->key1, bs);
 
-        instance->key2 = ((bs_temp & 0xFF) << 8) | (crc_temp & 0xFF);
+        // Build key2 from BS and calculated CRC
+        instance->key2 = ((uint16_t)bs << 8) | calculated_crc;
+
         FURI_LOG_I(
             TAG,
-            "Reconstructed key2: 0x%04X (BS=0x%02X, CRC=0x%02X)",
+            "Encoder key2: 0x%04X (BS=0x%02X, CRC=0x%02X calculated)",
             instance->key2,
-            (uint8_t)bs_temp,
-            (uint8_t)crc_temp);
+            bs,
+            calculated_crc);
 
         if(!flipper_format_read_uint32(
                flipper_format, "Repeat", (uint32_t*)&instance->encoder.repeat, 1)) {
@@ -581,42 +554,15 @@ static bool ford_v0_process_data(SubGhzProtocolDecoderFordV0* instance) {
         instance->key1 = ~combined;
         instance->data_low = 0;
         instance->data_high = 0;
-        FURI_LOG_I(
-            TAG,
-            "Got 64 bits, key1=0x%08lX%08lX",
-            (uint32_t)(instance->key1 >> 32),
-            (uint32_t)(instance->key1 & 0xFFFFFFFF));
         return false;
     }
 
     if(instance->bit_count == 80) {
         uint16_t key2_raw = (uint16_t)(instance->data_low & 0xFFFF);
         uint16_t key2 = ~key2_raw;
-
-        FURI_LOG_I(TAG, "Got 80 bits, key2_raw=0x%04X key2=0x%04X", key2_raw, key2);
-
-        // Verify CRC
-        bool crc_ok = ford_v0_verify_crc(instance->key1, key2);
-
-        FURI_LOG_I(
-            TAG,
-            "Received: key1=0x%08lX%08lX key2=0x%04X CRC=%s",
-            (uint32_t)(instance->key1 >> 32),
-            (uint32_t)(instance->key1 & 0xFFFFFFFF),
-            key2,
-            crc_ok ? "OK" : "BAD");
-
         decode_ford_v0(
             instance->key1, key2, &instance->serial, &instance->button, &instance->count);
         instance->key2 = key2;
-
-        FURI_LOG_I(
-            TAG,
-            "Decoded: Sn=0x%08lX Btn=%d Cnt=0x%05lX",
-            instance->serial,
-            instance->button,
-            instance->count);
-
         return true;
     }
 
@@ -819,7 +765,7 @@ SubGhzProtocolStatus
     if(ret == SubGhzProtocolStatusOk) {
         instance->key1 = instance->generic.data;
 
-        // Rewind and read all custom fields
+        // Rewind and read custom fields
         flipper_format_rewind(flipper_format);
 
         uint32_t bs_temp = 0;
@@ -827,15 +773,6 @@ SubGhzProtocolStatus
         flipper_format_read_uint32(flipper_format, "BS", &bs_temp, 1);
         flipper_format_read_uint32(flipper_format, "CRC", &crc_temp, 1);
         instance->key2 = ((bs_temp & 0xFF) << 8) | (crc_temp & 0xFF);
-
-        FURI_LOG_I(
-            TAG,
-            "Deserialize: key1=0x%08lX%08lX key2=0x%04X (BS=%02X CRC=%02X)",
-            (uint32_t)(instance->key1 >> 32),
-            (uint32_t)(instance->key1 & 0xFFFFFFFF),
-            instance->key2,
-            (uint8_t)bs_temp,
-            (uint8_t)crc_temp);
 
         flipper_format_read_uint32(flipper_format, "Serial", &instance->serial, 1);
         instance->generic.serial = instance->serial;
